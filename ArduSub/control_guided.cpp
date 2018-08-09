@@ -1,7 +1,7 @@
 #include "Sub.h"
 
 /*
- * control_guided.pde - init and run calls for guided flight mode
+ * Init and run calls for guided flight mode
  */
 
 #ifndef GUIDED_LOOK_AT_TARGET_MIN_DISTANCE_CM
@@ -36,15 +36,14 @@ struct Guided_Limit {
 // guided_init - initialise guided controller
 bool Sub::guided_init(bool ignore_checks)
 {
-        if (position_ok() || ignore_checks) {
-            // initialise yaw
-            set_auto_yaw_mode(get_default_auto_yaw_mode(false));
-            // start in position control mode
-            guided_pos_control_start();
-            return true;
-        }else{
-            return false;
-        }
+    if (!position_ok() && !ignore_checks) {
+        return false;
+    }
+    // initialise yaw
+    set_auto_yaw_mode(get_default_auto_yaw_mode(false));
+    // start in position control mode
+    guided_pos_control_start();
+    return true;
 }
 
 // initialise guided mode's position controller
@@ -77,7 +76,7 @@ void Sub::guided_vel_control_start()
     guided_mode = Guided_Velocity;
 
     // initialize vertical speeds and leash lengths
-    pos_control.set_speed_z(-g.pilot_velocity_z_max, g.pilot_velocity_z_max);
+    pos_control.set_speed_z(-get_pilot_speed_dn(), g.pilot_speed_up);
     pos_control.set_accel_z(g.pilot_accel_z);
 
     // initialise velocity controller
@@ -95,7 +94,6 @@ void Sub::guided_posvel_control_start()
     // set speed and acceleration from wpnav's speed and acceleration
     pos_control.set_speed_xy(wp_nav.get_speed_xy());
     pos_control.set_accel_xy(wp_nav.get_wp_acceleration());
-    pos_control.set_jerk_xy_to_default();
 
     const Vector3f& curr_pos = inertial_nav.get_position();
     const Vector3f& curr_vel = inertial_nav.get_velocity();
@@ -127,7 +125,7 @@ void Sub::guided_angle_control_start()
     pos_control.set_desired_velocity_z(inertial_nav.get_velocity_z());
 
     // initialise targets
-    guided_angle_state.update_time_ms = millis();
+    guided_angle_state.update_time_ms = AP_HAL::millis();
     guided_angle_state.roll_cd = ahrs.roll_sensor;
     guided_angle_state.pitch_cd = ahrs.pitch_sensor;
     guided_angle_state.yaw_cd = ahrs.yaw_sensor;
@@ -205,25 +203,39 @@ void Sub::guided_set_velocity(const Vector3f& velocity)
         guided_vel_control_start();
     }
 
-    vel_update_time_ms = millis();
+    vel_update_time_ms = AP_HAL::millis();
 
     // set position controller velocity target
     pos_control.set_desired_velocity(velocity);
 }
 
 // set guided mode posvel target
-void Sub::guided_set_destination_posvel(const Vector3f& destination, const Vector3f& velocity)
+bool Sub::guided_set_destination_posvel(const Vector3f& destination, const Vector3f& velocity)
 {
     // check we are in velocity control mode
     if (guided_mode != Guided_PosVel) {
         guided_posvel_control_start();
     }
 
-    posvel_update_time_ms = millis();
+#if AC_FENCE == ENABLED
+    // reject destination if outside the fence
+    Location_Class dest_loc(destination);
+    if (!fence.check_destination_within_fence(dest_loc)) {
+        Log_Write_Error(ERROR_SUBSYSTEM_NAVIGATION, ERROR_CODE_DEST_OUTSIDE_FENCE);
+        // failure is propagated to GCS with NAK
+        return false;
+    }
+#endif
+
+    posvel_update_time_ms = AP_HAL::millis();
     posvel_pos_target_cm = destination;
     posvel_vel_target_cms = velocity;
 
     pos_control.set_pos_target(posvel_pos_target_cm);
+
+    // log target
+    Log_Write_GuidedTarget(guided_mode, destination, velocity);
+    return true;
 }
 
 // set guided mode angle target
@@ -241,7 +253,7 @@ void Sub::guided_set_angle(const Quaternion &q, float climb_rate_cms)
     guided_angle_state.yaw_cd = wrap_180_cd(ToDeg(guided_angle_state.yaw_cd) * 100.0f);
 
     guided_angle_state.climb_rate_cms = climb_rate_cms;
-    guided_angle_state.update_time_ms = millis();
+    guided_angle_state.update_time_ms = AP_HAL::millis();
 }
 
 // guided_run - runs the guided controller
@@ -277,8 +289,8 @@ void Sub::guided_run()
 // called from guided_run
 void Sub::guided_pos_control_run()
 {
-    // if not auto armed or motors not enabled set throttle to zero and exit immediately
-    if (!motors.armed() || !ap.auto_armed || !motors.get_interlock()) {
+    // if motors not enabled set throttle to zero and exit immediately
+    if (!motors.armed()) {
         motors.set_desired_spool_state(AP_Motors::DESIRED_SPIN_WHEN_ARMED);
         // Sub vehicles do not stabilize roll/pitch/yaw when disarmed
         attitude_control.set_throttle_out_unstabilized(0,true,g.throttle_filt);
@@ -288,7 +300,7 @@ void Sub::guided_pos_control_run()
 
     // process pilot's yaw input
     float target_yaw_rate = 0;
-    if (!failsafe.manual_control) {
+    if (!failsafe.pilot_input) {
         // get pilot's desired yaw rate
         target_yaw_rate = get_pilot_desired_yaw_rate(channel_yaw->get_control_in());
         if (!is_zero(target_yaw_rate)) {
@@ -315,10 +327,10 @@ void Sub::guided_pos_control_run()
     // call attitude controller
     if (auto_yaw_mode == AUTO_YAW_HOLD) {
         // roll & pitch from waypoint controller, yaw rate from pilot
-        attitude_control.input_euler_angle_roll_pitch_euler_rate_yaw(channel_roll->get_control_in(), channel_pitch->get_control_in(), target_yaw_rate, get_smoothing_gain());
+        attitude_control.input_euler_angle_roll_pitch_euler_rate_yaw(channel_roll->get_control_in(), channel_pitch->get_control_in(), target_yaw_rate);
     } else {
         // roll, pitch from waypoint controller, yaw heading from auto_heading()
-        attitude_control.input_euler_angle_roll_pitch_yaw(channel_roll->get_control_in(), channel_pitch->get_control_in(), get_auto_heading(), true, get_smoothing_gain());
+        attitude_control.input_euler_angle_roll_pitch_yaw(channel_roll->get_control_in(), channel_pitch->get_control_in(), get_auto_heading(), true);
     }
 }
 
@@ -326,8 +338,8 @@ void Sub::guided_pos_control_run()
 // called from guided_run
 void Sub::guided_vel_control_run()
 {
-    // if not auto armed or motors not enabled set throttle to zero and exit immediately
-    if (!motors.armed() || !ap.auto_armed || !motors.get_interlock()) {
+    // ifmotors not enabled set throttle to zero and exit immediately
+    if (!motors.armed()) {
         // initialise velocity controller
         pos_control.init_vel_controller_xyz();
         motors.set_desired_spool_state(AP_Motors::DESIRED_SPIN_WHEN_ARMED);
@@ -339,7 +351,7 @@ void Sub::guided_vel_control_run()
 
     // process pilot's yaw input
     float target_yaw_rate = 0;
-    if (!failsafe.manual_control) {
+    if (!failsafe.pilot_input) {
         // get pilot's desired yaw rate
         target_yaw_rate = get_pilot_desired_yaw_rate(channel_yaw->get_control_in());
         if (!is_zero(target_yaw_rate)) {
@@ -351,7 +363,7 @@ void Sub::guided_vel_control_run()
     motors.set_desired_spool_state(AP_Motors::DESIRED_THROTTLE_UNLIMITED);
 
     // set velocity to zero if no updates received for 3 seconds
-    uint32_t tnow = millis();
+    uint32_t tnow = AP_HAL::millis();
     if (tnow - vel_update_time_ms > GUIDED_POSVEL_TIMEOUT_MS && !pos_control.get_desired_velocity().is_zero()) {
         pos_control.set_desired_velocity(Vector3f(0,0,0));
     }
@@ -369,10 +381,10 @@ void Sub::guided_vel_control_run()
     // call attitude controller
     if (auto_yaw_mode == AUTO_YAW_HOLD) {
         // roll & pitch from waypoint controller, yaw rate from pilot
-        attitude_control.input_euler_angle_roll_pitch_euler_rate_yaw(channel_roll->get_control_in(), channel_pitch->get_control_in(), target_yaw_rate, get_smoothing_gain());
+        attitude_control.input_euler_angle_roll_pitch_euler_rate_yaw(channel_roll->get_control_in(), channel_pitch->get_control_in(), target_yaw_rate);
     } else {
         // roll, pitch from waypoint controller, yaw heading from auto_heading()
-        attitude_control.input_euler_angle_roll_pitch_yaw(channel_roll->get_control_in(), channel_pitch->get_control_in(), get_auto_heading(), true, get_smoothing_gain());
+        attitude_control.input_euler_angle_roll_pitch_yaw(channel_roll->get_control_in(), channel_pitch->get_control_in(), get_auto_heading(), true);
     }
 }
 
@@ -380,8 +392,8 @@ void Sub::guided_vel_control_run()
 // called from guided_run
 void Sub::guided_posvel_control_run()
 {
-    // if not auto armed or motors not enabled set throttle to zero and exit immediately
-    if (!motors.armed() || !ap.auto_armed || !motors.get_interlock()) {
+    // if motors not enabled set throttle to zero and exit immediately
+    if (!motors.armed()) {
         // set target position and velocity to current position and velocity
         pos_control.set_pos_target(inertial_nav.get_position());
         pos_control.set_desired_velocity(Vector3f(0,0,0));
@@ -395,7 +407,7 @@ void Sub::guided_posvel_control_run()
     // process pilot's yaw input
     float target_yaw_rate = 0;
 
-    if (!failsafe.manual_control) {
+    if (!failsafe.pilot_input) {
         // get pilot's desired yaw rate
         target_yaw_rate = get_pilot_desired_yaw_rate(channel_yaw->get_control_in());
         if (!is_zero(target_yaw_rate)) {
@@ -407,7 +419,7 @@ void Sub::guided_posvel_control_run()
     motors.set_desired_spool_state(AP_Motors::DESIRED_THROTTLE_UNLIMITED);
 
     // set velocity to zero if no updates received for 3 seconds
-    uint32_t tnow = millis();
+    uint32_t tnow = AP_HAL::millis();
     if (tnow - posvel_update_time_ms > GUIDED_POSVEL_TIMEOUT_MS && !posvel_vel_target_cms.is_zero()) {
         posvel_vel_target_cms.zero();
     }
@@ -415,23 +427,20 @@ void Sub::guided_posvel_control_run()
     // calculate dt
     float dt = pos_control.time_since_last_xy_update();
 
-    // update at poscontrol update rate
-    if (dt >= pos_control.get_dt_xy()) {
-        // sanity check dt
-        if (dt >= 0.2f) {
-            dt = 0.0f;
-        }
-
-        // advance position target using velocity target
-        posvel_pos_target_cm += posvel_vel_target_cms * dt;
-
-        // send position and velocity targets to position controller
-        pos_control.set_pos_target(posvel_pos_target_cm);
-        pos_control.set_desired_velocity_xy(posvel_vel_target_cms.x, posvel_vel_target_cms.y);
-
-        // run position controller
-        pos_control.update_xy_controller(AC_PosControl::XY_MODE_POS_AND_VEL_FF, ekfNavVelGainScaler, false);
+    // sanity check dt
+    if (dt >= 0.2f) {
+        dt = 0.0f;
     }
+
+    // advance position target using velocity target
+    posvel_pos_target_cm += posvel_vel_target_cms * dt;
+
+    // send position and velocity targets to position controller
+    pos_control.set_pos_target(posvel_pos_target_cm);
+    pos_control.set_desired_velocity_xy(posvel_vel_target_cms.x, posvel_vel_target_cms.y);
+
+    // run position controller
+    pos_control.update_xy_controller(ekfNavVelGainScaler);
 
     float lateral_out, forward_out;
     translate_pos_control_rp(lateral_out, forward_out);
@@ -445,10 +454,10 @@ void Sub::guided_posvel_control_run()
     // call attitude controller
     if (auto_yaw_mode == AUTO_YAW_HOLD) {
         // roll & pitch from waypoint controller, yaw rate from pilot
-        attitude_control.input_euler_angle_roll_pitch_euler_rate_yaw(channel_roll->get_control_in(), channel_pitch->get_control_in(), target_yaw_rate, get_smoothing_gain());
+        attitude_control.input_euler_angle_roll_pitch_euler_rate_yaw(channel_roll->get_control_in(), channel_pitch->get_control_in(), target_yaw_rate);
     } else {
         // roll, pitch from waypoint controller, yaw heading from auto_heading()
-        attitude_control.input_euler_angle_roll_pitch_yaw(channel_roll->get_control_in(), channel_pitch->get_control_in(), get_auto_heading(), true, get_smoothing_gain());
+        attitude_control.input_euler_angle_roll_pitch_yaw(channel_roll->get_control_in(), channel_pitch->get_control_in(), get_auto_heading(), true);
     }
 }
 
@@ -456,13 +465,13 @@ void Sub::guided_posvel_control_run()
 // called from guided_run
 void Sub::guided_angle_control_run()
 {
-    // if not auto armed or motors not enabled set throttle to zero and exit immediately
-    if (!motors.armed() || !ap.auto_armed || !motors.get_interlock()) {
+    // if motors not enabled set throttle to zero and exit immediately
+    if (!motors.armed()) {
         motors.set_desired_spool_state(AP_Motors::DESIRED_SPIN_WHEN_ARMED);
         // Sub vehicles do not stabilize roll/pitch/yaw when disarmed
         attitude_control.set_throttle_out_unstabilized(0.0f,true,g.throttle_filt);
 
-        pos_control.relax_alt_hold_controllers(0.0f);
+        pos_control.relax_alt_hold_controllers(motors.get_throttle_hover());
         return;
     }
 
@@ -484,7 +493,7 @@ void Sub::guided_angle_control_run()
     float climb_rate_cms = constrain_float(guided_angle_state.climb_rate_cms, -fabsf(wp_nav.get_speed_down()), wp_nav.get_speed_up());
 
     // check for timeout - set lean angles and climb rate to zero if no updates received for 3 seconds
-    uint32_t tnow = millis();
+    uint32_t tnow = AP_HAL::millis();
     if (tnow - guided_angle_state.update_time_ms > GUIDED_ATTITUDE_TIMEOUT_MS) {
         roll_in = 0.0f;
         pitch_in = 0.0f;
@@ -495,7 +504,7 @@ void Sub::guided_angle_control_run()
     motors.set_desired_spool_state(AP_Motors::DESIRED_THROTTLE_UNLIMITED);
 
     // call attitude controller
-    attitude_control.input_euler_angle_roll_pitch_yaw(roll_in, pitch_in, yaw_in, true, get_smoothing_gain());
+    attitude_control.input_euler_angle_roll_pitch_yaw(roll_in, pitch_in, yaw_in, true);
 
     // call position controller
     pos_control.set_alt_target_from_climb_rate_ff(climb_rate_cms, G_Dt, false);
@@ -538,7 +547,7 @@ void Sub::guided_limit_init_time_and_pos()
 bool Sub::guided_limit_check()
 {
     // check if we have passed the timeout
-    if ((guided_limit.timeout_ms > 0) && (millis() - guided_limit.start_time >= guided_limit.timeout_ms)) {
+    if ((guided_limit.timeout_ms > 0) && (AP_HAL::millis() - guided_limit.start_time >= guided_limit.timeout_ms)) {
         return true;
     }
 
@@ -557,7 +566,7 @@ bool Sub::guided_limit_check()
 
     // check if we have gone beyond horizontal limit
     if (guided_limit.horiz_max_cm > 0.0f) {
-        float horiz_move = pv_get_horizontal_distance_cm(guided_limit.start_pos, curr_pos);
+        float horiz_move = get_horizontal_distance_cm(guided_limit.start_pos, curr_pos);
         if (horiz_move > guided_limit.horiz_max_cm) {
             return true;
         }
