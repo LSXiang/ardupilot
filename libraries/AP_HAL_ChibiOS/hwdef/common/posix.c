@@ -1594,7 +1594,7 @@ int fchmod(int fd, mode_t mode)
 /// @return 0 on sucess.
 /// @return -1 on error with errno set.
 
-char *getcwd(char *pathname, int len)
+char *getcwd(char *pathname, size_t len)
 {
     int res;
     errno = 0;
@@ -2536,7 +2536,7 @@ static void _fprintf_putc(struct _printf_t *p, char ch)
 /// @return size of printed result
 
 int
-fprintf(FILE *fp, const char *fmt, ...)
+__wrap_fprintf(FILE *fp, const char *fmt, ...)
 {
     va_list va;
     char* buf;

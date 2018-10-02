@@ -361,7 +361,7 @@ int dirname ( char *str );
  int fchmod ( int fd , mode_t mode );
 #endif
 
-char *getcwd ( char *pathname , int len );
+char *getcwd ( char *pathname , size_t len );
 int mkdir ( const char *pathname , mode_t mode );
 int rename ( const char *oldpath , const char *newpath );
 int rmdir ( const char *pathname );
@@ -388,7 +388,7 @@ int free_file_descriptor ( int fileno );
 int new_file_descriptor ( void );
 int posix_fopen_modes_to_open ( const char *mode );
 
-int fprintf(FILE *fp, const char *format, ...);
+int __wrap_fprintf(FILE *fp, const char *format, ...);
 
 #ifdef __cplusplus
 }

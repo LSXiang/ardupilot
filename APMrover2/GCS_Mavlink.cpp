@@ -217,9 +217,54 @@ void Rover::send_pid_tuning(mavlink_channel_t chan)
     if (g.gcs_pid_mask & 4) {
         pid_info = &g2.attitude_control.get_pitch_to_throttle_pid().get_pid_info();
         mavlink_msg_pid_tuning_send(chan, PID_TUNING_PITCH,
+                                    degrees(pid_info->desired),
+                                    degrees(ahrs.pitch),
+                                    pid_info->FF,
+                                    pid_info->P,
+                                    pid_info->I,
+                                    pid_info->D);
+        if (!HAVE_PAYLOAD_SPACE(chan, PID_TUNING)) {
+            return;
+        }
+    }
+
+    // left wheel rate control pid
+    if (g.gcs_pid_mask & 8) {
+        pid_info = &g2.wheel_rate_control.get_pid(0).get_pid_info();
+        mavlink_msg_pid_tuning_send(chan, 7,
                                     pid_info->desired,
-                                    ahrs.pitch,
-                                    0,
+                                    pid_info->actual,
+                                    pid_info->FF,
+                                    pid_info->P,
+                                    pid_info->I,
+                                    pid_info->D);
+        if (!HAVE_PAYLOAD_SPACE(chan, PID_TUNING)) {
+            return;
+        }
+    }
+
+    // right wheel rate control pid
+    if (g.gcs_pid_mask & 16) {
+        pid_info = &g2.wheel_rate_control.get_pid(1).get_pid_info();
+        mavlink_msg_pid_tuning_send(chan, 8,
+                                    pid_info->desired,
+                                    pid_info->actual,
+                                    pid_info->FF,
+                                    pid_info->P,
+                                    pid_info->I,
+                                    pid_info->D);
+        if (!HAVE_PAYLOAD_SPACE(chan, PID_TUNING)) {
+            return;
+        }
+    }
+
+    // sailboat heel to mainsail pid
+    if (g.gcs_pid_mask & 32) {
+        pid_info = &g2.attitude_control.get_sailboat_heel_pid().get_pid_info();
+        mavlink_msg_pid_tuning_send(chan, 9,
+                                    pid_info->desired,
+                                    pid_info->actual,
+                                    pid_info->FF,
                                     pid_info->P,
                                     pid_info->I,
                                     pid_info->D);
@@ -232,6 +277,21 @@ void Rover::send_pid_tuning(mavlink_channel_t chan)
 void Rover::send_fence_status(mavlink_channel_t chan)
 {
     fence_send_mavlink_status(chan);
+}
+
+void Rover::send_wind(mavlink_channel_t chan)
+{
+    // exit immediately if no wind vane
+    if (!rover.g2.windvane.enabled()) {
+        return;
+    }
+
+    // send wind
+    mavlink_msg_wind_send(
+        chan,
+        degrees(rover.g2.windvane.get_apparent_wind_direction_rad()),
+        0,
+        0);
 }
 
 void Rover::send_wheel_encoder(mavlink_channel_t chan)
@@ -317,6 +377,9 @@ bool GCS_MAVLINK_Rover::try_send_message(enum ap_message id)
         rover.send_fence_status(chan);
         break;
 
+    case MSG_WIND:
+        CHECK_PAYLOAD_SIZE(WIND);
+        rover.send_wind(chan);
         break;
 
     case MSG_PID_TUNING:
@@ -462,6 +525,7 @@ static const ap_message STREAM_EXTRA2_msgs[] = {
 static const ap_message STREAM_EXTRA3_msgs[] = {
     MSG_AHRS,
     MSG_HWSTATUS,
+    MSG_WIND,
     MSG_RANGEFINDER,
     MSG_SYSTEM_TIME,
     MSG_BATTERY2,
@@ -516,6 +580,12 @@ MAV_RESULT GCS_MAVLINK_Rover::_handle_command_preflight_calibration(const mavlin
 {
     if (is_equal(packet.param4, 1.0f)) {
         if (rover.trim_radio()) {
+            return MAV_RESULT_ACCEPTED;
+        } else {
+            return MAV_RESULT_FAILED;
+        }
+    } else if (is_equal(packet.param6, 1.0f)) {
+        if (rover.g2.windvane.start_calibration()) {
             return MAV_RESULT_ACCEPTED;
         } else {
             return MAV_RESULT_FAILED;
@@ -578,6 +648,11 @@ MAV_RESULT GCS_MAVLINK_Rover::handle_command_int_packet(const mavlink_command_in
         }
         return MAV_RESULT_ACCEPTED;
     }
+
+    case MAV_CMD_DO_SET_REVERSE:
+        // param1 : Direction (0=Forward, 1=Reverse)
+        rover.control_mode->set_reversed(is_equal(packet.param1,1.0f));
+        return MAV_RESULT_ACCEPTED;
 
 #if MOUNT == ENABLED
     case MAV_CMD_DO_SET_ROI: {
@@ -718,6 +793,11 @@ MAV_RESULT GCS_MAVLINK_Rover::handle_command_long_packet(const mavlink_command_l
         }
         return MAV_RESULT_FAILED;
     }
+
+    case MAV_CMD_DO_SET_REVERSE:
+        // param1 : Direction (0=Forward, 1=Reverse)
+        rover.control_mode->set_reversed(is_equal(packet.param1,1.0f));
+        return MAV_RESULT_ACCEPTED;
 
     case MAV_CMD_NAV_SET_YAW_SPEED:
     {
@@ -1147,6 +1227,9 @@ void GCS_MAVLINK_Rover::handleMessage(mavlink_message_t* msg)
         rover.rangefinder.handle_msg(msg);
         rover.g2.proximity.handle_msg(msg);
         break;
+    case MAVLINK_MSG_ID_OBSTACLE_DISTANCE:
+        rover.g2.proximity.handle_msg(msg);
+        break;
 
     default:
         handle_common_message(msg);
@@ -1228,15 +1311,6 @@ bool GCS_MAVLINK_Rover::accept_packet(const mavlink_status_t &status, mavlink_me
     return (msg.sysid == rover.g.sysid_my_gcs);
 }
 
-AP_Camera *GCS_MAVLINK_Rover::get_camera() const
-{
-#if CAMERA == ENABLED
-    return &rover.camera;
-#else
-    return nullptr;
-#endif
-}
-
 AP_AdvancedFailsafe *GCS_MAVLINK_Rover::get_advanced_failsafe() const
 {
 #if ADVANCED_FAILSAFE == ENABLED
@@ -1255,14 +1329,18 @@ AP_VisualOdom *GCS_MAVLINK_Rover::get_visual_odom() const
 #endif
 }
 
-Compass *GCS_MAVLINK_Rover::get_compass() const
-{
-    return &rover.compass;
-}
-
 AP_Mission *GCS_MAVLINK_Rover::get_mission()
 {
     return &rover.mission;
+}
+
+AP_Rally *GCS_MAVLINK_Rover::get_rally() const
+{
+#if AP_RALLY == ENABLED
+    return &rover.g2.rally;
+#else
+    return nullptr;
+#endif
 }
 
 bool GCS_MAVLINK_Rover::set_mode(const uint8_t mode)

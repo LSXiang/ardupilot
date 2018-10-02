@@ -32,6 +32,9 @@ Mode *Rover::mode_from_mode_num(const enum Mode::Number num)
     case Mode::Number::FOLLOW:
         ret = &mode_follow;
         break;
+    case Mode::Number::SIMPLE:
+        ret = &mode_simple;
+        break;
     case Mode::Number::AUTO:
         ret = &mode_auto;
         break;
@@ -152,7 +155,7 @@ void RC_Channel_Rover::do_aux_function(const aux_func_t ch_option, const aux_swi
 
                 // save command
                 if (rover.mission.add_cmd(cmd)) {
-                    hal.console->printf("Added waypoint %u", static_cast<uint32_t>(rover.mission.num_commands()));
+                    hal.console->printf("Added waypoint %u", (unsigned)rover.mission.num_commands());
                 }
             }
         }
@@ -224,6 +227,11 @@ void RC_Channel_Rover::do_aux_function(const aux_func_t ch_option, const aux_swi
     // Set mode to Follow
     case FOLLOW:
         do_aux_function_change_mode(rover.mode_follow, ch_flag);
+        break;
+
+    // set mode to Simple
+    case SIMPLE:
+        do_aux_function_change_mode(rover.mode_simple, ch_flag);
         break;
 
     default:
