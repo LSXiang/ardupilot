@@ -164,7 +164,7 @@ float AP_WindVane::get_apparent_wind_direction_rad() const
 }
 
 // record home heading for use as wind direction if no sensor is fitted
-void AP_WindVane::record_home_headng()
+void AP_WindVane::record_home_heading()
 {
     _home_heading = AP::ahrs().yaw;
 }
@@ -210,6 +210,9 @@ float AP_WindVane::read_SITL_direction_ef()
     // temporarily store true speed and direction for easy access
     const float wind_speed = AP::sitl()->wind_speed_active;
     const float wind_dir_rad = radians(AP::sitl()->wind_direction_active);
+
+    // Note than the SITL wind direction is defined as the direction the wind is travelling to
+    // This is accounted for in these calculations
 
     // convert true wind speed and direction into a 2D vector
     Vector2f wind_vector_ef(sinf(wind_dir_rad) * wind_speed, cosf(wind_dir_rad) * wind_speed);
