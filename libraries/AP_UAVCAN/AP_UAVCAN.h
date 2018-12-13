@@ -24,6 +24,7 @@
 #include <AP_Param/AP_Param.h>
 
 #include <uavcan/helpers/heap_based_pool_allocator.hpp>
+#include "AP_UAVCAN_Servers.h"
 
 #ifndef UAVCAN_NODE_POOL_SIZE
 #define UAVCAN_NODE_POOL_SIZE 8192
@@ -152,13 +153,14 @@ private:
     AP_Int32 _esc_bm;
     AP_Int16 _servo_rate_hz;
 
-
     uavcan::Node<0> *_node;
     uavcan::HeapBasedPoolAllocator<UAVCAN_NODE_POOL_BLOCK_SIZE, AP_UAVCAN::RaiiSynchronizer> _node_allocator;
     uint8_t _driver_index;
     char _thread_name[9];
     bool _initialized;
-
+#ifdef HAS_UAVCAN_SERVERS
+    AP_UAVCAN_Servers _servers;
+#endif
 
     ///// SRV output /////
     struct {
@@ -169,7 +171,7 @@ private:
 
     uint8_t _SRV_armed;
     uint32_t _SRV_last_send_us;
-    AP_HAL::Semaphore *SRV_sem;
+    HAL_Semaphore SRV_sem;
 
     ///// LED /////
     struct led_device {
@@ -185,7 +187,7 @@ private:
         uint64_t last_update;
     } _led_conf;
 
-    AP_HAL::Semaphore *_led_out_sem;
+    HAL_Semaphore _led_out_sem;
 };
 
 #endif /* AP_UAVCAN_H_ */

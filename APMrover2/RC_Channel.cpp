@@ -90,6 +90,7 @@ void RC_Channel_Rover::init_aux_function(const aux_func_t ch_option, const aux_s
     case GUIDED:
     case LOITER:
     case FOLLOW:
+    case SAILBOAT_TACK:
         break;
     default:
         RC_Channel::init_aux_function(ch_option, ch_flag);
@@ -137,7 +138,7 @@ void RC_Channel_Rover::do_aux_function(const aux_func_t ch_option, const aux_swi
 
             // if disarmed clear mission and set home to current location
             if (!rover.arming.is_armed()) {
-                rover.mission.clear();
+                rover.mode_auto.mission.clear();
                 rover.set_home_to_current_location(false);
                 return;
             }
@@ -154,8 +155,8 @@ void RC_Channel_Rover::do_aux_function(const aux_func_t ch_option, const aux_swi
                 cmd.id = MAV_CMD_NAV_WAYPOINT;
 
                 // save command
-                if (rover.mission.add_cmd(cmd)) {
-                    hal.console->printf("Added waypoint %u", (unsigned)rover.mission.num_commands());
+                if (rover.mode_auto.mission.add_cmd(cmd)) {
+                    hal.console->printf("Added waypoint %u", (unsigned)rover.mode_auto.mission.num_commands());
                 }
             }
         }
@@ -232,6 +233,12 @@ void RC_Channel_Rover::do_aux_function(const aux_func_t ch_option, const aux_swi
     // set mode to Simple
     case SIMPLE:
         do_aux_function_change_mode(rover.mode_simple, ch_flag);
+        break;
+
+    // trigger sailboat tack
+    case SAILBOAT_TACK:
+        // any switch movement interpreted as request to tack
+        rover.control_mode->handle_tack_request();
         break;
 
     default:
